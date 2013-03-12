@@ -5,7 +5,10 @@
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (ToJSON(..), object, (.=))
 import Data.Git
-import Data.Text (Text)
+import Data.Maybe (catMaybes, listToMaybe)
+import Data.Monoid ((<>))
+import Data.Text (Text, unpack)
+import Data.Text.Lazy (toStrict)
 import Filesystem.Path.CurrentOS
 import Network (withSocketsDo)
 import Network.Wai.Middleware.RequestLogger
@@ -22,23 +25,43 @@ app = do
     middleware logStdoutDev
     middleware $ staticPolicy (noDots >-> addBase "static")
 
-    get "/commits" $ do
-        commits "HEAD" 100
+    get "/refs" $ do
+        repo <- liftIO getRepo
+        refs <- liftIO (listRefNames repo allRefsFlag)
+        json refs
 
-    get "/commits/:limit" $ do
-        limit <- param "limit"
-        commits "HEAD" limit
-
-commits :: Text -> Int -> ActionM ()
-commits ref limit = liftIO (getCommits ref limit) >>= json
+    get (regex "^/commits/([^/]+)/(.*)$") $ do
+        limit   <- param "1"
+        ref     <- param "2"
+        commits <- liftIO (getCommits (toStrict ref) limit)
+        json commits
 
 ------------------------------------------------------------------------
 
+getRepo :: IO Repository
+getRepo = openRepository (fromText "c:/development/ng/starfix-ng")
+
+resolveRef' :: Repository -> Text -> IO (Maybe Oid)
+resolveRef' repo ref = do
+    xs <- sequence [
+        resolveRef repo ref
+      , resolveRef repo ("refs/heads/" <> ref)
+      , resolveRef repo ("refs/tags/" <> ref)
+      , resolveRef repo ("refs/remotes/" <> ref)
+      ]
+    return $ listToMaybe $ catMaybes xs
+
 getCommits :: Text -> Int -> IO [Commit]
 getCommits ref limit = do
-    repo <- openRepository (fromText "c:/development/ng/starfix-ng")
-    (Just commit) <- lookupRefCommit repo ref
-    getHistory limit commit
+    repo <- getRepo
+    moid <- resolveRef' repo ref
+    case moid of
+      Nothing  -> error ("Cannot resolve: " ++ unpack ref)
+      Just oid -> do
+        mcommit <- lookupCommit repo oid
+        case mcommit of
+          Nothing     -> error ("Cannot find ref: " ++ show oid)
+          Just commit -> getHistory limit commit
 
 getHistory :: Int -> Commit -> IO [Commit]
 getHistory 0 _ = return []
@@ -66,31 +89,3 @@ instance ToJSON Signature where
       ]
 
 ------------------------------------------------------------------------
-
--- prerntKermert :: Commit -> IO [Commit]
--- prerntKermert c = do
---     let msg = encodeUtf8 $ commitLog c
---     B.putStrLn $ B.concat ["<div>", msg, "</div>"]
---     parents <- getCommitParents c
---     case parents of
---         []    -> return ()
---         (p:_) -> prerntKermert p
-
--- fromStatus :: Monad m => Status -> m Response
--- fromStatus s = fromStatus' s msg
---   where
---     msg = LT.decodeUtf8 (LB.fromChunks [statusMessage s])
--- 
--- fromStatus' :: Monad m => Status -> LT.Text -> m Response
--- fromStatus' s msg = return (responseLazyText s hdr msg)
---   where
---     hdr = [("Content-Type", "text/plain")]
--- 
--- responseLazyText :: Status -> ResponseHeaders -> LT.Text -> Response
--- responseLazyText s h t = ResponseBuilder s h (fromLazyText t)
--- 
--- responseJSON :: Status -> ResponseHeaders -> Value -> Response
--- responseJSON s hs x = responseLazyText s hs' (enc x)
---   where
---     hs' = [("Content-Type", "application/json")] ++ hs
---     enc = toLazyText . fromValue
