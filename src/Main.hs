@@ -52,9 +52,10 @@ getHistory n c = do
 
 instance ToJSON Commit where
   toJSON c = object [
-        "log"       .= commitLog c
+        "hash"      .= show (getId c)
       , "author"    .= commitAuthor c
       , "committer" .= commitCommitter c
+      , "log"       .= commitLog c
       ]
 
 instance ToJSON Signature where
