@@ -17,6 +17,7 @@ executable gittens
   build-depends:
       base                  == 4.6.*
     , aeson                 == 0.6.*
+    , attoparsec            == 0.10.*
     , blaze-builder         == 0.3.*
     , bytestring            == 0.10.*
     , conduit               == 0.5.*
