@@ -21,6 +21,7 @@ executable gittens
     , blaze-builder         == 0.3.*
     , bytestring            == 0.10.*
     , conduit               == 0.5.*
+    , containers            == 0.5.*
     , gitlib                == 0.7.*
     , http-types            == 0.8.*
     , network               == 2.4.*
