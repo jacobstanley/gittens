@@ -32,6 +32,8 @@ app = do
     middleware logStdoutDev
     middleware $ staticPolicy (noDots >-> addBase "static")
 
+    get "/" $ file "static/index.html"
+
     get anyPath $ do
         path <- param "path"
         case parseOnly pGitRequest path of
