@@ -6,47 +6,50 @@ import           Control.Applicative
 import           Control.Arrow (first, second)
 import           Control.Monad
 import           Control.Monad.IO.Class (liftIO)
-import           Data.Aeson (ToJSON(..), object, (.=))
-import           Data.Attoparsec.Text.Lazy
+import           Data.Aeson (ToJSON(..), object, (.=), encode)
+import           Data.Attoparsec.ByteString.Char8
+import qualified Data.ByteString.Char8 as B
 import           Data.Git
 import qualified Data.HashSet as H
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, listToMaybe)
 import           Data.Monoid ((<>))
-import           Data.Text (Text, unpack)
+import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Text.Encoding (decodeUtf8)
-import           Data.Text.Lazy (toStrict, fromStrict)
-import           Filesystem.Path.CurrentOS hiding (concat)
+import           Filesystem.Path.CurrentOS (FilePath, fromText)
+
 import           Network (withSocketsDo)
-import           Network.Wai (rawPathInfo)
-import           Network.Wai.Middleware.RequestLogger
-import           Network.Wai.Middleware.Static hiding ((<|>))
-import           Web.Scotty hiding (body, files)
+import           Snap.Core hiding (path)
+import           Snap.Http.Server
+import           Snap.Util.FileServe (serveDirectoryWith, fancyDirectoryConfig)
 
 import           Prelude hiding (FilePath, log)
 
 main :: IO ()
 main = withSocketsDo $ do
     putStrLn "Gittens v0.1"
-    scotty 30090 app
+    cfg <- commandLineConfig config
+    putStrLn "Setting phasers to stun... (ctrl-c to quit)"
+    httpServe cfg site
 
-app :: ScottyM ()
-app = do
-    middleware logStdoutDev
-    middleware $ staticPolicy (noDots >-> addBase "static")
+config :: MonadSnap m => Config m a
+config = setPort 30090
+       $ defaultConfig
 
-    get "/" $ file "static/index.html"
-
-    get anyPath $ do
-        path <- param "path"
-        case parseOnly pGitRequest path of
-            Left _    -> next
-            Right req -> process req
+site :: Snap ()
+site = serveDirectoryWith fancyDirectoryConfig "static"
+   <|> method GET gitRequest
+  where
+    gitRequest = do
+      path <- getsRequest rqPathInfo
+      case parseOnly pGitRequest path of
+        Left _    -> pass
+        Right req -> process req
 
 ------------------------------------------------------------------------
 
-process :: GitRequest -> ActionM ()
+process :: GitRequest -> Snap ()
 
 process (GitRefs path) =
     (json =<<) . liftIO $ do
@@ -77,6 +80,9 @@ hashBlobs = H.fromList . map (second $ T.pack . showId)
     showId (IdRef oid) = show oid
     showId (ObjRef b)  = show (getId b)
 
+json :: ToJSON a => a -> Snap ()
+json = writeLBS . encode . toJSON
+
 ------------------------------------------------------------------------
 
 type RepoPath = FilePath
@@ -97,30 +103,24 @@ pGitRequest =
   <|> GitDiff    <$> pRepoPath <*> pRevision <*> pRevision <*. "diff"
 
 pRepoPath :: Parser RepoPath
-pRepoPath = fromText <$> (windows <|> unix)
+pRepoPath = fromText . decodeUtf8 <$> (windows <|> unix)
   where
     path = takeWhile1 (/= ':')
-    unix = path <* char ':'
+
+    unix = do
+      p <- path
+      char ':'
+      return ("/" <> p)
+
     windows = do
-      char '/'
-      d <- T.singleton <$> letter
+      d <- B.singleton <$> letter_ascii
       char ':'
       p <- path
       char ':'
       return (d <> ":" <> p)
 
 pRevision :: Parser Revision
-pRevision = takeWhile1 (/= ':') <* char ':'
-
-------------------------------------------------------------------------
-
-instance Parsable Text where
-    parseParam = Right . toStrict
-
-anyPath :: RoutePattern
-anyPath = function $ \rq -> Just [("path", textPath rq)]
-  where
-    textPath = fromStrict . decodeUtf8 . rawPathInfo
+pRevision = decodeUtf8 <$> takeWhile1 (/= ':') <* char ':'
 
 ------------------------------------------------------------------------
 
@@ -139,7 +139,7 @@ getCommit :: Repository -> Text -> IO Commit
 getCommit repo ref = do
     mOid <- resolveRef' repo ref
     case mOid of
-      Nothing  -> error ("Cannot resolve: " ++ unpack ref)
+      Nothing  -> error ("Cannot resolve: " ++ T.unpack ref)
       Just oid -> do
         mCommit <- lookupCommit repo oid
         case mCommit of
@@ -193,4 +193,3 @@ instance ToJSON Signature where
       , "email" .= signatureEmail s
       , "when"  .= signatureWhen s
       ]
-
