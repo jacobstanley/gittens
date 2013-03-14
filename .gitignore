@@ -1,6 +1,6 @@
 /dist/
 /cabal-dev/
-/logs/
+/log/
 *.aux
 *.hp
 *.prof
