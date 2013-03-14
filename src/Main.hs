@@ -10,7 +10,7 @@ import           Data.Aeson (ToJSON(..), object, (.=), encode)
 import           Data.Attoparsec.ByteString.Char8
 import qualified Data.ByteString.Char8 as B
 import           Data.Git
-import qualified Data.HashSet as H
+import           Data.List ((\\))
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, listToMaybe)
 import           Data.Monoid ((<>))
@@ -35,6 +35,7 @@ main = withSocketsDo $ do
 
 config :: MonadSnap m => Config m a
 config = setPort 30090
+       . setCompression False
        $ defaultConfig
 
 site :: Snap ()
@@ -72,16 +73,18 @@ process (GitDiff path refA refB) = do
         repo   <- openRepository path
         filesA <- hashBlobs <$> getCommitFiles repo refA
         filesB <- hashBlobs <$> getCommitFiles repo refB
-        return $ H.map fst (H.difference filesA filesB)
+        return $ map fst (filesA \\ filesB)
 
-hashBlobs :: [(Text, ObjRef Blob)] -> H.HashSet (Text, Text)
-hashBlobs = H.fromList . map (second $ T.pack . showId)
+hashBlobs :: [(Text, ObjRef Blob)] -> [(Text, Text)]
+hashBlobs = map (second $ T.pack . showId)
   where
     showId (IdRef oid) = show oid
     showId (ObjRef b)  = show (getId b)
 
 json :: ToJSON a => a -> Snap ()
-json = writeLBS . encode . toJSON
+json obj = do
+    modifyResponse (setContentType "application/json")
+    (writeLBS . encode . toJSON) obj
 
 ------------------------------------------------------------------------
 
