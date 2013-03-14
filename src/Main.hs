@@ -3,13 +3,15 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 import           Control.Applicative
+import           Control.Arrow (first, second)
 import           Control.Monad
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (ToJSON(..), object, (.=))
 import           Data.Attoparsec.Text.Lazy
 import           Data.Git
-import           Data.Maybe (catMaybes, listToMaybe)
+import qualified Data.HashSet as H
 import qualified Data.Map as M
+import           Data.Maybe (catMaybes, listToMaybe)
 import           Data.Monoid ((<>))
 import           Data.Text (Text, unpack)
 import qualified Data.Text as T
@@ -59,11 +61,21 @@ process (GitCommits path ref limit) = do
 
 process (GitTree path ref) = do
     (json =<<) . liftIO $ do
+        repo  <- openRepository path
+        hashBlobs <$> getCommitFiles repo ref
+
+process (GitDiff path refA refB) = do
+    (json =<<) . liftIO $ do
         repo   <- openRepository path
-        commit <- getCommit repo ref
-        tree   <- loadObject' (commitTree commit) commit
-        files  <- getFiles tree
-        return $ map (\(p,b) -> (p, show (getId b))) files
+        filesA <- hashBlobs <$> getCommitFiles repo refA
+        filesB <- hashBlobs <$> getCommitFiles repo refB
+        return $ H.map fst (H.difference filesA filesB)
+
+hashBlobs :: [(Text, ObjRef Blob)] -> H.HashSet (Text, Text)
+hashBlobs = H.fromList . map (second $ T.pack . showId)
+  where
+    showId (IdRef oid) = show oid
+    showId (ObjRef b)  = show (getId b)
 
 ------------------------------------------------------------------------
 
@@ -74,6 +86,7 @@ data GitRequest
     = GitRefs    RepoPath
     | GitCommits RepoPath Revision Int
     | GitTree    RepoPath Revision
+    | GitDiff    RepoPath Revision Revision
     deriving (Eq, Show)
 
 pGitRequest :: Parser GitRequest
@@ -81,6 +94,7 @@ pGitRequest =
       GitRefs    <$> pRepoPath <*. "refs"
   <|> GitCommits <$> pRepoPath <*> pRevision <*> "commits/" .*> decimal
   <|> GitTree    <$> pRepoPath <*> pRevision <*. "tree"
+  <|> GitDiff    <$> pRepoPath <*> pRevision <*> pRevision <*. "diff"
 
 pRepoPath :: Parser RepoPath
 pRepoPath = fromText <$> (windows <|> unix)
@@ -142,19 +156,23 @@ getHistory n c = do
         ps' <- getHistory (n-1) p
         return (c:ps')
 
-getFiles :: Tree -> IO [(Text, Blob)]
+getCommitFiles :: Repository -> Text -> IO [(Text, ObjRef Blob)]
+getCommitFiles repo ref = do
+    commit <- getCommit repo ref
+    tree   <- loadObject' (commitTree commit) commit
+    getFiles tree
+
+getFiles :: Tree -> IO [(Text, ObjRef Blob)]
 getFiles tree =
     liftM concat . mapM go $ M.toList $ treeContents tree
   where
-    go (name, BlobEntry ref _) = do
-        blob <- loadObject' ref tree
-        return [(name, blob)]
-    go (name, TreeEntry ref) = do
+    go (name, BlobEntry ref _) = return [(name, ref)]
+    go (name, TreeEntry ref)   = do
         subTree <- loadObject' ref tree
         files   <- getFiles subTree
         return (map prefix files)
       where
-        prefix (p, b) = (name `T.append` "/" `T.append` p, b)
+        prefix = first (name `T.append` "/" `T.append`)
 
 instance ToJSON Commit where
   toJSON c = object [
